@@ -1,0 +1,297 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+
+# http://www.apache.org/licenses/LICENSE-2.0
+
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Accord Project on AWS
+  SAM Template to deploy and run Accord Project contracts on AWS
+Parameters:
+  ContractTemplatesRepositoryS3BucketName:
+    Type: String
+    Description: >
+      A name of an S3 bucket storing Accord Project contract templates.
+  QLDBContractLedgerName:
+    Type: String
+    Description: >
+      A name of a QLDB ledger to keep the state of instantiated Accord Project contracts.
+  EventsQueueName:
+    Type: String
+    Description: >
+      A name of an SQS queue to send events, emitted during the contract execution.
+Globals:
+  Function:
+    Runtime: nodejs12.x
+    Timeout: 180
+    Handler: index.handler
+    Environment:
+      Variables:
+        AWS_REGION_NAME: !Sub "${AWS::Region}"
+        ACCORD_S3_CONTRACTS_REPO_NAME: !Ref S3ContractTemplatesRepositoryBucket
+        ACCORD_LEDGER_NAME: !Ref QLDBContractLedgerName
+        ACCORD_EVENTS_QUEUE_NAME: !Ref EventsQueueName
+        ACCORD_EVENTS_QUEUE_URL: !Sub "https://sqs.${AWS::Region}.amazonaws.com/${AWS::AccountId}/${EventsQueueName}"
+Resources:
+  #####
+  # Lambda layer:
+  #
+  depLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub "${AWS::StackName}-cicero-sam-dependencies"
+      Description: Dependencies for sam app [node_modules, lib]
+      ContentUri: ../dependencies/
+      CompatibleRuntimes:
+        - nodejs12.x
+      LicenseInfo: "Apache2"
+      RetentionPolicy: Delete
+  #####
+  # Lambdas:
+  #
+  accorddeploy:
+    Type: "AWS::Serverless::Function"
+    Properties:
+      Runtime: nodejs12.x
+      CodeUri: ../fcn-accord-deploy/
+      Description: "Lambda function that helps to deploy Accord Project Contract"
+      MemorySize: 512
+      Timeout: 900
+      Role: !GetAtt AccordLambdaRole.Arn
+      FunctionName: !Sub "${AWS::StackName}-accord-deploy"
+      Layers:
+        - !Ref depLayer
+      # VpcConfig:
+      #   SecurityGroupIds:
+      #     - !Ref AMBDevOpsSecurityGroupID
+      #   SubnetIds:
+      #     - !Ref AMBDevOpsPrivateSubnet1ID
+      #     - !Ref AMBDevOpsPrivateSubnet2ID
+      Tags:
+        AccordContracts: AccordDeploy
+  accordrun:
+    Type: "AWS::Serverless::Function"
+    Properties:
+      Runtime: nodejs12.x
+      CodeUri: ../fcn-accord-run/
+      Description: "Lambda function that helps to run Accord Project Contract"
+      MemorySize: 512
+      Timeout: 900
+      Role: !GetAtt AccordLambdaRole.Arn
+      FunctionName: !Sub "${AWS::StackName}-accord-run"
+      Layers:
+        - !Ref depLayer
+      # VpcConfig:
+      #   SecurityGroupIds:
+      #     - !Ref AMBDevOpsSecurityGroupID
+      #   SubnetIds:
+      #     - !Ref AMBDevOpsPrivateSubnet1ID
+      #     - !Ref AMBDevOpsPrivateSubnet2ID
+      Tags:
+        AccordContracts: LambdaAccordRun
+  qldbverify:
+    Type: "AWS::Serverless::Function"
+    Properties:
+      Runtime: nodejs12.x
+      CodeUri: ../fcn-qldb-verify/
+      Description: "Verify Ledger Metadata for a specific document against the Ledger"
+      MemorySize: 128
+      Timeout: 900
+      Role: !GetAtt AccordLambdaRole.Arn
+      FunctionName: !Sub "${AWS::StackName}-qldb-verify"
+      Layers:
+        - !Ref depLayer
+      # VpcConfig:
+      #   SecurityGroupIds:
+      #     - !Ref AMBDevOpsSecurityGroupID
+      #   SubnetIds:
+      #     - !Ref AMBDevOpsPrivateSubnet1ID
+      #     - !Ref AMBDevOpsPrivateSubnet2ID
+      Tags:
+        AccordContracts: LambdaQLDBVerify
+  qldbvgethistory:
+    Type: "AWS::Serverless::Function"
+    Properties:
+      Runtime: nodejs12.x
+      CodeUri: ../fcn-qldb-get-document-history/
+      Description: "Get full document history from the ledger by document key"
+      MemorySize: 128
+      Timeout: 900
+      Role: !GetAtt AccordLambdaRole.Arn
+      FunctionName: !Sub "${AWS::StackName}-qldb-get-document-history"
+      Layers:
+        - !Ref depLayer
+      # VpcConfig:
+      #   SecurityGroupIds:
+      #     - !Ref AMBDevOpsSecurityGroupID
+      #   SubnetIds:
+      #     - !Ref AMBDevOpsPrivateSubnet1ID
+      #     - !Ref AMBDevOpsPrivateSubnet2ID
+      Tags:
+        AccordContracts: LambdaQLDBGetHistory
+  qldbvgetmetadata:
+    Type: "AWS::Serverless::Function"
+    Properties:
+      Runtime: nodejs12.x
+      CodeUri: ../fcn-qldb-get-document-metadata/
+      Description: "Get full document metadata from the ledger by document key"
+      MemorySize: 128
+      Timeout: 900
+      Role: !GetAtt AccordLambdaRole.Arn
+      FunctionName: !Sub "${AWS::StackName}-qldb-get-document-metadata"
+      Layers:
+        - !Ref depLayer
+      # VpcConfig:
+      #   SecurityGroupIds:
+      #     - !Ref AMBDevOpsSecurityGroupID
+      #   SubnetIds:
+      #     - !Ref AMBDevOpsPrivateSubnet1ID
+      #     - !Ref AMBDevOpsPrivateSubnet2ID
+      Tags:
+        AccordContracts: LambdaQLDBGetMetadata
+  #####
+  # Setting ledger to keep the state:
+  #
+  QLDBLedger:
+    Type: "AWS::QLDB::Ledger"
+    Properties:
+      DeletionProtection: true
+      Name: !Ref QLDBContractLedgerName
+      PermissionsMode: "STANDARD"
+      Tags:
+        - Key: AccordContracts
+          Value: ContractStateLedger
+  #####
+  # Setting S3 to keep contract templates:
+  #
+  S3ContractTemplatesRepositoryBucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      BucketName: !Sub "${ContractTemplatesRepositoryS3BucketName}-${AWS::Region}-${AWS::AccountId}"
+      Tags:
+        - Key: AccordContracts
+          Value: ContractTemplatesRepository
+  EventsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Ref EventsQueueName
+      DelaySeconds: 0
+      VisibilityTimeout: 120
+  #####
+  # Defining IAM role:
+  #
+  AccordLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-AccordLambdaRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Tags:
+        - Key: AccordContracts
+          Value: AccordLambdaRole
+      Policies:
+        - PolicyName: S3ReadWriteAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:PutObjectAcl
+                Effect: Allow
+                Resource: !Sub "arn:aws:s3:::${ContractTemplatesRepositoryS3BucketName}*/*"
+        - PolicyName: !Sub "${AWS::StackName}-QLDBLedgerReadWriteAccess"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: VisualEditor0
+                Effect: Allow
+                Action:
+                  - qldb:GetBlock
+                  - qldb:ListLedgers
+                  - qldb:GetRevision
+                  - qldb:DescribeLedger
+                  - qldb:SendCommand
+                  - qldb:GetDigest
+                Resource: !Sub "arn:aws:qldb:${AWS::Region}:${AWS::AccountId}:ledger/${QLDBContractLedgerName}"
+        - PolicyName: !Sub "${AWS::StackName}-QLDBLedgerTablesReadWriteAccess"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: VisualEditor0
+                Effect: Allow
+                Action:
+                  - qldb:PartiQLCreateTable
+                  - qldb:PartiQLCreateIndex
+                  - qldb:PartiQLInsert
+                  - qldb:PartiQLUpdate
+                  - qldb:PartiQLSelect
+                  - qldb:PartiQLHistoryFunction
+                Resource: !Sub "arn:aws:qldb:${AWS::Region}:${AWS::AccountId}:ledger/${QLDBContractLedgerName}/table/*"
+        - PolicyName: !Sub "${AWS::StackName}-QLDBLedgerUserTablesReadAccess"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: VisualEditor0
+                Effect: Allow
+                Action:
+                  - qldb:PartiQLSelect
+                Resource: !Sub "arn:aws:qldb:${AWS::Region}:${AWS::AccountId}:ledger/${QLDBContractLedgerName}/information_schema/user_tables"
+        - PolicyName: !Sub "${AWS::StackName}-SQSPublishAccess"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:ChangeMessageVisibility
+                Resource: !Sub "arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:${EventsQueueName}"
+Outputs:
+  AccordDeployARN:
+    Description: "Arn of accord deploy function"
+    Value: !GetAtt accorddeploy.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-accord-deployARN"
+  AccordRunARN:
+    Description: "Arn of accord run function"
+    Value: !GetAtt accordrun.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-accord-run-ARN"
+  QLDBVerifyARN:
+    Description: "Arn of QLDB verify function"
+    Value: !GetAtt qldbverify.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-qldb-verifyARN"
+  ContractLedgerName:
+    Description: "Name of a QLDB ledger to keep contract state"
+    Value: !Ref QLDBLedger
+  ContractRepoS3BucketName:
+    Description: "Name of an S3 bucket to keep contract templates repository"
+    Value: !Ref S3ContractTemplatesRepositoryBucket
+  EventsQueueARN:
+    Description: "An ARN of an SQS queue for emitting contract events"
+    Value: !GetAtt EventsQueue.Arn
+  EventsQueueURL:
+    Description: "A URL of an SQS queue for emitting contract events"
+    Value: !Ref EventsQueue
